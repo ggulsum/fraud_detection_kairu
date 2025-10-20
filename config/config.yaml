@@ -1,0 +1,217 @@
+# Fraud Detection Configuration
+
+# ===== DATA CONFIGURATION =====
+data:
+  # Veri dosya yolları
+  raw_data_path: "data/raw/"
+  processed_data_path: "data/processed/"
+  
+  # Veri validasyon kuralları
+  validation:
+    required_columns: ["Amount", "Time", "Class"]
+    amount_min: 0
+    amount_max: 50000
+    class_values: [0, 1]
+    missing_threshold: 0.1  # Max %10 missing değer
+  
+  # Train/test split
+  test_size: 0.3
+  validation_size: 0.2
+  random_state: 42
+  stratify: true
+
+# ===== PREPROCESSING CONFIGURATION =====
+preprocessing:
+  # Feature scaling
+  scaling_method: "robust"  # options: standard, robust, minmax
+  
+  # Categorical encoding
+  encoding_method: "onehot"  # options: onehot, label, ordinal
+  
+  # Missing value handling
+  numerical_imputation: "mean"  # options: mean, median, mode
+  categorical_imputation: "most_frequent"
+  
+  # Feature engineering
+  create_log_features: true
+  create_time_features: true
+  create_interaction_features: true
+  
+  # Outlier detection
+  outlier_method: "iqr"  # options: iqr, zscore
+  outlier_threshold: 1.5
+
+# ===== IMBALANCE HANDLING =====
+imbalance:
+  method: "smote"  # options: smote, adasyn, smotetomek, undersampling
+  sampling_strategy: "auto"
+  random_state: 42
+
+# ===== MODEL CONFIGURATION =====
+models:
+  # Random Forest
+  random_forest:
+    n_estimators: 100
+    max_depth: 10
+    min_samples_split: 5
+    min_samples_leaf: 2
+    random_state: 42
+    class_weight: "balanced"
+  
+  # Logistic Regression
+  logistic_regression:
+    penalty: "l2"
+    C: 1.0
+    max_iter: 1000
+    random_state: 42
+    class_weight: "balanced"
+  
+  # Isolation Forest
+  isolation_forest:
+    contamination: 0.05
+    n_estimators: 100
+    max_samples: "auto"
+    random_state: 42
+  
+  # Local Outlier Factor
+  lof:
+    n_neighbors: 20
+    contamination: 0.05
+    novelty: true
+
+# ===== EVALUATION CONFIGURATION =====
+evaluation:
+  # Cross validation
+  cv_folds: 5
+  cv_scoring: ["roc_auc", "average_precision", "f1"]
+  
+  # Performance thresholds
+  min_roc_auc: 0.75
+  min_pr_auc: 0.3
+  min_f1_score: 0.4
+  min_precision: 0.5
+  min_recall: 0.7
+  
+  # Business metrics
+  false_negative_cost: 100  # Fraud'u kaçırma maliyeti
+  false_positive_cost: 1    # Yanlış alarm maliyeti
+  
+  # Threshold optimization
+  threshold_range: [0.1, 0.9]
+  threshold_steps: 50
+
+# ===== EXPLAINABILITY CONFIGURATION =====
+explainability:
+  # SHAP configuration
+  shap:
+    explainer_type: "auto"  # options: auto, tree, kernel, linear
+    max_evals: 100
+    max_samples: 100
+  
+  # LIME configuration
+  lime:
+    num_features: 10
+    num_samples: 5000
+    discretize_continuous: true
+  
+  # Feature importance
+  feature_importance_methods: ["shap", "permutation"]
+  top_features_count: 15
+
+# ===== DEPLOYMENT CONFIGURATION =====
+deployment:
+  # Model registry
+  model_registry_path: "models/"
+  model_version: "v1.0"
+  
+  # API configuration
+  api:
+    host: "0.0.0.0"
+    port: 8000
+    workers: 4
+    timeout: 30
+  
+  # Performance requirements
+  max_inference_time: 100  # milliseconds
+  min_throughput: 1000     # requests per minute
+  
+  # Monitoring
+  monitoring:
+    enable_drift_detection: true
+    drift_threshold: 0.1
+    performance_degradation_threshold: 0.05
+    high_fraud_rate_threshold: 0.2
+
+# ===== MLFLOW CONFIGURATION =====
+mlflow:
+  tracking_uri: "http://localhost:5000"
+  experiment_name: "fraud_detection"
+  
+  # Auto-logging
+  autolog:
+    sklearn: true
+    log_models: true
+    log_model_signatures: true
+    log_input_examples: true
+  
+  # Model registration
+  register_best_model: true
+  model_stage: "Staging"  # options: None, Staging, Production, Archived
+
+# ===== LOGGING CONFIGURATION =====
+logging:
+  level: "INFO"  # options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  
+  # File logging
+  file_logging: true
+  log_file: "logs/fraud_detection.log"
+  max_file_size: "10MB"
+  backup_count: 5
+
+# ===== TESTING CONFIGURATION =====
+testing:
+  # Unit test configuration
+  test_data_size: 1000
+  test_random_state: 123
+  
+  # Performance test configuration
+  load_test_requests: 100
+  load_test_concurrent: 10
+  
+  # Integration test configuration
+  integration_test_timeout: 300  # seconds
+
+# ===== SECURITY CONFIGURATION =====
+security:
+  # Data encryption
+  encrypt_sensitive_data: true
+  encryption_algorithm: "AES-256"
+  
+  # API security
+  enable_api_key_auth: true
+  rate_limiting: true
+  max_requests_per_minute: 1000
+  
+  # Model security
+  model_signature_verification: true
+  secure_model_loading: true
+
+# ===== ENVIRONMENT SPECIFIC =====
+environments:
+  development:
+    debug: true
+    model_registry_path: "models/dev/"
+    mlflow_tracking_uri: "sqlite:///mlflow_dev.db"
+  
+  staging:
+    debug: false
+    model_registry_path: "models/staging/"
+    mlflow_tracking_uri: "http://staging-mlflow:5000"
+  
+  production:
+    debug: false
+    model_registry_path: "models/prod/"
+    mlflow_tracking_uri: "http://prod-mlflow:5000"
+    enable_monitoring: true
+    strict_validation: true

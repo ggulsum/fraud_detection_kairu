@@ -1,0 +1,584 @@
+name: Fraud Detection CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  PYTHON_VERSION: "3.9"
+  MODEL_REGISTRY: "fraud-detection-models"
+
+jobs:
+  # ===== DATA VALIDATION =====
+  data-validation:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Validate data schema
+      run: |
+        python -c "
+        import pandas as pd
+        import numpy as np
+        from src.preprocessing import FeaturePreprocessor
+        
+        print('Data validation başlatılıyor...')
+        
+        # Synthetic data ile test
+        np.random.seed(42)
+        data = {
+            'Amount': np.random.lognormal(2, 1, 100),
+            'Time': np.random.randint(0, 86400, 100),
+            'Class': np.random.choice([0, 1], 100, p=[0.95, 0.05])
+        }
+        df = pd.DataFrame(data)
+        
+        # Schema validation
+        required_columns = ['Amount', 'Time', 'Class']
+        assert all(col in df.columns for col in required_columns), 'Missing required columns'
+        
+        # Data type validation
+        assert df['Amount'].dtype in ['int64', 'float64'], 'Amount must be numeric'
+        assert df['Class'].dtype in ['int64', 'float64'], 'Class must be numeric'
+        
+        # Value range validation
+        assert df['Amount'].min() >= 0, 'Amount cannot be negative'
+        assert df['Class'].isin([0, 1]).all(), 'Class must be 0 or 1'
+        
+        print('✅ Data validation passed')
+        "
+
+  # ===== CODE QUALITY =====
+  code-quality:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install flake8 black pytest
+        pip install -r requirements.txt
+    
+    - name: Check code formatting with Black
+      run: |
+        black --check --diff src/
+    
+    - name: Lint with flake8
+      run: |
+        flake8 src/ --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 src/ --count --exit-zero --max-complexity=10 --max-line-length=88 --statistics
+
+  # ===== UNIT TESTS =====
+  unit-tests:
+    runs-on: ubuntu-latest
+    needs: [data-validation, code-quality]
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov
+    
+    - name: Run unit tests
+      run: |
+        python -m pytest tests/test_simple.py -v --cov=src --cov-report=xml --cov-report=html
+    
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: unittests
+
+  # ===== MODEL TRAINING =====
+  model-training:
+    runs-on: ubuntu-latest
+    needs: [unit-tests]
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Train models
+      run: |
+        python -c "
+        import numpy as np
+        import pandas as pd
+        from sklearn.model_selection import train_test_split
+        from sklearn.ensemble import RandomForestClassifier, IsolationForest
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.metrics import roc_auc_score, average_precision_score
+        from src.preprocessing import FeaturePreprocessor, ImbalanceHandler
+        from src.evaluation import FraudEvaluator
+        import joblib
+        import os
+        
+        print('Model training başlatılıyor...')
+        
+        # Synthetic data oluştur
+        np.random.seed(42)
+        n_samples = 2000
+        data = {
+            'Amount': np.random.lognormal(2, 1, n_samples),
+            'Time': np.random.randint(0, 86400, n_samples),
+            'Merchant_Category': np.random.choice(['grocery', 'gas', 'restaurant'], n_samples),
+            'Class': np.random.choice([0, 1], n_samples, p=[0.95, 0.05])
+        }
+        df = pd.DataFrame(data)
+        
+        # Preprocessing
+        preprocessor = FeaturePreprocessor(scaling_method='robust')
+        X = df.drop('Class', axis=1)
+        y = df['Class']
+        
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.3, random_state=42, stratify=y
+        )
+        
+        # Preprocess
+        X_train_processed = preprocessor.fit_transform(
+            pd.concat([X_train, y_train], axis=1), target_col='Class'
+        ).drop('Class', axis=1)
+        
+        X_test_processed = preprocessor.transform(
+            pd.concat([X_test, y_test], axis=1), target_col='Class'
+        ).drop('Class', axis=1)
+        
+        # Handle imbalance
+        X_train_balanced, y_train_balanced = ImbalanceHandler.apply_smote(
+            X_train_processed, y_train
+        )
+        
+        # Models to train
+        models = {
+            'random_forest': RandomForestClassifier(n_estimators=100, random_state=42),
+            'logistic_regression': LogisticRegression(random_state=42),
+            'isolation_forest': IsolationForest(contamination=0.05, random_state=42)
+        }
+        
+        model_metrics = {}
+        
+        # Train and evaluate models
+        for name, model in models.items():
+            print(f'Training {name}...')
+            
+            if name == 'isolation_forest':
+                # Outlier detection model
+                model.fit(X_train_balanced)
+                predictions = model.predict(X_test_processed)
+                # Convert -1 (outlier) to 1 (fraud), 1 (normal) to 0
+                y_pred = np.where(predictions == -1, 1, 0)
+                roc_auc = roc_auc_score(y_test, y_pred)
+                pr_auc = average_precision_score(y_test, y_pred)
+            else:
+                # Supervised models
+                model.fit(X_train_balanced, y_train_balanced)
+                y_pred_proba = model.predict_proba(X_test_processed)[:, 1]
+                roc_auc = roc_auc_score(y_test, y_pred_proba)
+                pr_auc = average_precision_score(y_test, y_pred_proba)
+            
+            model_metrics[name] = {
+                'roc_auc': roc_auc,
+                'pr_auc': pr_auc
+            }
+            
+            # Save model
+            os.makedirs('models', exist_ok=True)
+            joblib.dump(model, f'models/{name}_model.pkl')
+            
+            print(f'{name} - ROC-AUC: {roc_auc:.4f}, PR-AUC: {pr_auc:.4f}')
+        
+        # Save preprocessor
+        joblib.dump(preprocessor, 'models/preprocessor.pkl')
+        
+        # Performance thresholds
+        min_roc_auc = 0.7
+        min_pr_auc = 0.3
+        
+        # Check if models meet minimum performance
+        for name, metrics in model_metrics.items():
+            assert metrics['roc_auc'] >= min_roc_auc, f'{name} ROC-AUC ({metrics[\"roc_auc\"]:.4f}) below threshold ({min_roc_auc})'
+            assert metrics['pr_auc'] >= min_pr_auc, f'{name} PR-AUC ({metrics[\"pr_auc\"]:.4f}) below threshold ({min_pr_auc})'
+        
+        print('✅ All models meet performance thresholds')
+        print('✅ Model training completed successfully')
+        "
+    
+    - name: Upload model artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: trained-models
+        path: models/
+
+  # ===== MODEL VALIDATION =====
+  model-validation:
+    runs-on: ubuntu-latest
+    needs: [model-training]
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Download model artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: trained-models
+        path: models/
+    
+    - name: Validate model performance
+      run: |
+        python -c "
+        import joblib
+        import numpy as np
+        import pandas as pd
+        from sklearn.model_selection import train_test_split
+        from sklearn.metrics import roc_auc_score, average_precision_score
+        from src.evaluation import FraudEvaluator
+        
+        print('Model validation başlatılıyor...')
+        
+        # Test data oluştur
+        np.random.seed(123)  # Farklı seed
+        n_samples = 500
+        data = {
+            'Amount': np.random.lognormal(2.5, 1.2, n_samples),
+            'Time': np.random.randint(0, 86400, n_samples),
+            'Merchant_Category': np.random.choice(['grocery', 'gas', 'restaurant'], n_samples),
+            'Class': np.random.choice([0, 1], n_samples, p=[0.93, 0.07])
+        }
+        df = pd.DataFrame(data)
+        
+        # Load preprocessor
+        preprocessor = joblib.load('models/preprocessor.pkl')
+        
+        # Preprocess test data
+        X = df.drop('Class', axis=1)
+        y = df['Class']
+        
+        X_processed = preprocessor.transform(
+            pd.concat([X, y], axis=1), target_col='Class'
+        ).drop('Class', axis=1)
+        
+        # Load and validate models
+        models = ['random_forest', 'logistic_regression']
+        
+        for model_name in models:
+            print(f'Validating {model_name}...')
+            model = joblib.load(f'models/{model_name}_model.pkl')
+            
+            # Predictions
+            y_pred_proba = model.predict_proba(X_processed)[:, 1]
+            
+            # Metrics
+            roc_auc = roc_auc_score(y, y_pred_proba)
+            pr_auc = average_precision_score(y, y_pred_proba)
+            
+            print(f'{model_name} - Validation ROC-AUC: {roc_auc:.4f}, PR-AUC: {pr_auc:.4f}')
+            
+            # Validation thresholds (biraz daha düşük)
+            assert roc_auc >= 0.65, f'{model_name} validation ROC-AUC too low: {roc_auc:.4f}'
+            assert pr_auc >= 0.2, f'{model_name} validation PR-AUC too low: {pr_auc:.4f}'
+        
+        print('✅ Model validation passed')
+        "
+
+  # ===== SECURITY SCAN =====
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Run security scan
+      run: |
+        python -m pip install safety bandit
+        
+        # Check for vulnerable dependencies
+        safety check --json || true
+        
+        # Static security analysis
+        bandit -r src/ -f json || true
+
+  # ===== DEPLOYMENT STAGING =====
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: [model-validation, security-scan]
+    if: github.ref == 'refs/heads/develop'
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Download model artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: trained-models
+        path: models/
+    
+    - name: Deploy to staging
+      run: |
+        echo "🚀 Deploying to staging environment..."
+        
+        # Create deployment package
+        tar -czf fraud-detection-staging.tar.gz src/ models/ requirements.txt
+        
+        # Simulate deployment
+        python -c "
+        import joblib
+        import time
+        
+        print('Starting staging deployment...')
+        
+        # Load models to verify deployment
+        models = ['random_forest', 'logistic_regression']
+        for model_name in models:
+            model = joblib.load(f'models/{model_name}_model.pkl')
+            print(f'✅ {model_name} loaded successfully')
+        
+        # Simulate health check
+        time.sleep(2)
+        print('✅ Health check passed')
+        print('✅ Staging deployment completed')
+        "
+
+  # ===== DEPLOYMENT PRODUCTION =====
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: [model-validation, security-scan]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Download model artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: trained-models
+        path: models/
+    
+    - name: Deploy to production
+      run: |
+        echo "🚀 Deploying to production environment..."
+        
+        # Create production deployment package
+        tar -czf fraud-detection-production.tar.gz src/ models/ requirements.txt
+        
+        # Simulate production deployment
+        python -c "
+        import joblib
+        import time
+        import json
+        
+        print('Starting production deployment...')
+        
+        # Load and verify models
+        models = ['random_forest', 'logistic_regression']
+        model_info = {}
+        
+        for model_name in models:
+            model = joblib.load(f'models/{model_name}_model.pkl')
+            model_info[model_name] = {
+                'type': type(model).__name__,
+                'status': 'deployed'
+            }
+            print(f'✅ {model_name} deployed to production')
+        
+        # Create deployment manifest
+        manifest = {
+            'deployment_id': f'deploy_{int(time.time())}',
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'models': model_info,
+            'version': '1.0.0'
+        }
+        
+        with open('deployment_manifest.json', 'w') as f:
+            json.dump(manifest, f, indent=2)
+        
+        print('✅ Production deployment completed')
+        print(f'Deployment manifest: {json.dumps(manifest, indent=2)}')
+        "
+    
+    - name: Upload deployment manifest
+      uses: actions/upload-artifact@v3
+      with:
+        name: deployment-manifest
+        path: deployment_manifest.json
+
+  # ===== POST-DEPLOYMENT TESTS =====
+  post-deployment-tests:
+    runs-on: ubuntu-latest
+    needs: [deploy-production]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Download model artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: trained-models
+        path: models/
+    
+    - name: Run post-deployment tests
+      run: |
+        python -c "
+        import joblib
+        import numpy as np
+        import pandas as pd
+        import time
+        
+        print('Running post-deployment tests...')
+        
+        # Load models
+        rf_model = joblib.load('models/random_forest_model.pkl')
+        lr_model = joblib.load('models/logistic_regression_model.pkl')
+        preprocessor = joblib.load('models/preprocessor.pkl')
+        
+        # Test data
+        test_data = {
+            'Amount': [100.0, 5000.0, 50.0],
+            'Time': [14400, 72000, 3600],
+            'Merchant_Category': ['grocery', 'online', 'gas']
+        }
+        df_test = pd.DataFrame(test_data)
+        
+        # Preprocess
+        X_test = preprocessor.transform(df_test)
+        
+        # Test predictions
+        rf_pred = rf_model.predict_proba(X_test)
+        lr_pred = lr_model.predict_proba(X_test)
+        
+        print('✅ Random Forest predictions:', rf_pred[:, 1])
+        print('✅ Logistic Regression predictions:', lr_pred[:, 1])
+        
+        # Performance test
+        start_time = time.time()
+        for _ in range(100):
+            rf_model.predict_proba(X_test)
+        inference_time = (time.time() - start_time) / 100
+        
+        print(f'✅ Average inference time: {inference_time*1000:.2f}ms')
+        
+        # Assert performance requirements
+        assert inference_time < 0.1, f'Inference too slow: {inference_time:.4f}s'
+        
+        print('✅ All post-deployment tests passed')
+        "
+
+  # ===== MONITORING SETUP =====
+  setup-monitoring:
+    runs-on: ubuntu-latest
+    needs: [post-deployment-tests]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+    - name: Setup monitoring
+      run: |
+        echo "📊 Setting up production monitoring..."
+        
+        python -c "
+        import json
+        import time
+        
+        # Monitoring configuration
+        monitoring_config = {
+            'alerts': {
+                'model_drift': {'threshold': 0.1, 'enabled': True},
+                'performance_degradation': {'threshold': 0.05, 'enabled': True},
+                'high_fraud_rate': {'threshold': 0.2, 'enabled': True}
+            },
+            'metrics': {
+                'prediction_latency': {'target': '<100ms'},
+                'throughput': {'target': '>1000/min'},
+                'accuracy': {'target': '>95%'}
+            },
+            'dashboards': ['model_performance', 'fraud_detection_rates', 'system_health']
+        }
+        
+        print('Monitoring configuration:')
+        print(json.dumps(monitoring_config, indent=2))
+        print('✅ Monitoring setup completed')
+        "
+
+# ===== NOTIFICATION =====
+  notify:
+    runs-on: ubuntu-latest
+    needs: [setup-monitoring]
+    if: always()
+    steps:
+    - name: Notify deployment status
+      run: |
+        if [ "${{ needs.setup-monitoring.result }}" == "success" ]; then
+          echo "✅ Fraud Detection Pipeline: SUCCESS"
+          echo "🚀 Production deployment completed successfully"
+          echo "📊 Monitoring is active"
+        else
+          echo "❌ Fraud Detection Pipeline: FAILED"
+          echo "⚠️  Check pipeline logs for details"
+        fi

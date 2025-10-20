@@ -1,0 +1,28 @@
+{
+  "input_file": "/Users/yaseminarslan/Desktop/ds360_ikincihafta/hafta4/fraud-detection/data/raw/creditcard_fraud.csv",
+  "output_file": "data/processed/dataset_with_anomaly_scores_raw.csv",
+  "n_train": 199364,
+  "n_test": 85443,
+  "iforest": {
+    "roc_auc": 0.9479517826050448,
+    "pr_auc_ap": 0.1381409600670182,
+    "threshold": 0.148798401056923,
+    "precision": 0.25316455696202533,
+    "recall": 0.2702702702702703,
+    "f1": 0.261437907997266
+  },
+  "lof": {
+    "roc_auc": 0.6807273801734204,
+    "pr_auc_ap": 0.005198473233902818,
+    "threshold": 2.1978018246371875,
+    "precision": 0.01583710407239819,
+    "recall": 0.0472972972972973,
+    "f1": 0.02372881318347602,
+    "n_neighbors": 35
+  },
+  "notes": [
+    "Ölçekleme yok; skor yönleri normalize: yüksek skor = daha anomali.",
+    "Eşikler PR eğrisinde F1’i maksimize eden noktadan seçildi.",
+    "Skorlar train+test için üretildi; testte alarm etiketleri yazıldı."
+  ]
+}
