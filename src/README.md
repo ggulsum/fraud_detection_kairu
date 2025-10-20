@@ -2,7 +2,7 @@
 
 ## 📌 Genel Bakış
 
-`pipeline.py`, **dolandırıcılık (fraud)** tespiti için tasarlanmış uçtan uca (**end-to-end**) bir veri işleme ve modelleme akışını (**pipeline**) yönetir.
+[pipeline.py](src/pipeline.py), **dolandırıcılık (fraud)** tespiti için tasarlanmış uçtan uca (**end-to-end**) bir veri işleme ve modelleme akışını (**pipeline**) yönetir.
 Bu dosya tek başına çalıştırılabilir bir Python modülüdür ve aşağıdaki adımları gerçekleştirir:
 
 * Veri yükleme ve doğrulama
@@ -235,3 +235,4 @@ Bu dosya:
 * SHAP tabanlı açıklamalarla model davranışı analiz edilebilir.
 
 ---
+
